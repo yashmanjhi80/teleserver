@@ -3,15 +3,13 @@ const bodyParser = require('body-parser');
 const mongoose = require('mongoose');
 const app = express();
 const TelegramBot = require('node-telegram-bot-api');
-
+const bcrypt = require('bcrypt'); // To hash passwords
 
 // Replace with your bot token from BotFather
-const token = '6967411094:AAHVyNYzXB3fqCVGYLmdTk63Ax7SIacbl08';
-
+const token = '6967411094:AAHVyNYzXB3fqCVGYLmdTk63Ax7SIacbl08';  // Replace with actual bot token
 
 // Create a bot that uses polling to fetch new updates
 const bot = new TelegramBot(token, { polling: true });
-
 
 // Connect to MongoDB
 mongoose.connect('mongodb+srv://harshmanjhi1801:sukuna2279@cluster0.m8112.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0', 
@@ -22,58 +20,106 @@ mongoose.connect('mongodb+srv://harshmanjhi1801:sukuna2279@cluster0.m8112.mongod
 // Middleware to parse JSON
 app.use(bodyParser.json());
 
-
-
-// Listen for any kind of message
-bot.on('message', (msg) => {
-  const chatId = msg.chat.id;
-
-  // Send a simple response to the message
-  bot.sendMessage(chatId, 'Hello, this is your bot!');
-});
-
-
-// Define Mongoose Schema and Model for transaction_collection
-const transactionSchema = new mongoose.Schema({
+// Define Mongoose Schema and Model for users
+const userSchema = new mongoose.Schema({
   username: {
     type: String,
     required: true,
     unique: true // Ensure username is unique
   },
-  score: {
+  password: {
     type: String,
     required: true
   }
 });
 
-const Transaction = mongoose.model('transaction_collection', transactionSchema);
+const User = mongoose.model('users', userSchema);
 
-// Define routes
-app.get('/', (req, res) => {
-  res.send('Hello, World!');
-});
+// To store user states
+const userStates = {};
 
-// Handle POST request - Update if username exists, otherwise create new
-app.post('/data', (req, res) => {
-  const { username, score } = req.body;
-  console.log(req);
-
-  // Find by username and update the score, or create new if not found
-  Transaction.findOneAndUpdate(
-    { username },                  // Condition: Find by username
-    { score },                     // Update: Set the new score
-    { new: true, upsert: true }    // Options: create if not found (upsert), return the new document
-  )
-  .then((result) => {
-    if (result) {
-      res.send(`Data for ${username} updated successfully.`);
-      console.log('ok');
-    }
-  })
-  .catch(err => {
-    console.error(err);
-    res.status(500).send('Error updating data');
+// Function to send message and handle async bot replies
+const askUser = (chatId, message, callback) => {
+  bot.sendMessage(chatId, message).then(() => {
+    userStates[chatId].callback = callback;
   });
+};
+
+// Listen for any kind of message
+bot.on('message', (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text.toLowerCase();
+
+  // Check if the user has an ongoing state
+  if (!userStates[chatId]) {
+    userStates[chatId] = { state: null };
+  }
+
+  const userState = userStates[chatId];
+
+  // Registration Flow
+  if (userState.state === 'register_username') {
+    const username = text;
+    User.findOne({ username }).then((existingUser) => {
+      if (existingUser) {
+        bot.sendMessage(chatId, 'Username already exists. Try another one.');
+      } else {
+        userState.username = username;
+        userState.state = 'register_password';
+        askUser(chatId, 'Set your password:', 'register_password');
+      }
+    });
+  } else if (userState.state === 'register_password') {
+    const password = text;
+    bcrypt.hash(password, 10, (err, hashedPassword) => {
+      if (err) return bot.sendMessage(chatId, 'Error hashing password.');
+      const newUser = new User({ username: userState.username, password: hashedPassword });
+      newUser.save()
+        .then(() => {
+          bot.sendMessage(chatId, 'Registration successful! You can now log in.');
+          userState.state = null;
+        })
+        .catch(err => bot.sendMessage(chatId, 'Error registering user.'));
+    });
+  }
+
+  // Login Flow
+  else if (userState.state === 'login_username') {
+    const username = text;
+    User.findOne({ username }).then((user) => {
+      if (!user) {
+        bot.sendMessage(chatId, 'Username not found. Please register.');
+        userState.state = null;
+      } else {
+        userState.username = username;
+        userState.state = 'login_password';
+        askUser(chatId, 'Enter your password:', 'login_password');
+      }
+    });
+  } else if (userState.state === 'login_password') {
+    const password = text;
+    User.findOne({ username: userState.username }).then((user) => {
+      bcrypt.compare(password, user.password, (err, isMatch) => {
+        if (isMatch) {
+          bot.sendMessage(chatId, `Login successful! Welcome, ${userState.username}.`);
+          userState.state = null;
+        } else {
+          bot.sendMessage(chatId, 'Incorrect password. Try again.');
+        }
+      });
+    });
+  }
+
+  // Handle Register/Login Commands
+  else if (text === 'register') {
+    userState.state = 'register_username';
+    askUser(chatId, 'Set your username:', 'register_username');
+  } else if (text === 'login') {
+    userState.state = 'login_username';
+    askUser(chatId, 'Enter your username:', 'login_username');
+  } else {
+    bot.sendMessage(chatId, 'Please type "login" to log in or "register" to register.');
+  }
 });
 
 // Start the server
@@ -81,3 +127,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
+
+6967411094:AAHVyNYzXB3fqCVGYLmdTk63Ax7SIacbl08
